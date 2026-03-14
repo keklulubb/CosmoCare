@@ -1,10 +1,18 @@
 import { StatusBar } from "expo-status-bar";
 import { StyleSheet, Text, View } from "react-native";
 import { mockMedication } from "./src/data/mockMedication";
-import { getCurrentTimezone } from "./src/lib/schedule";
+
+import {
+  formatDoseForTimezone,
+  getCurrentTimezone,
+  getNextDose,
+} from "./src/lib/schedule";
+
 
 export default function App() {
   const currentTimezone = getCurrentTimezone();
+  const nextDoseUtc = getNextDose(mockMedication);
+  const nextDoseLocal = formatDoseForTimezone(nextDoseUtc, currentTimezone);
 
   return (
     <View style={styles.container}>
@@ -19,6 +27,12 @@ export default function App() {
 
         <Text style={styles.label}>Interval</Text>
         <Text style={styles.value}>{mockMedication.intervalHours} hours</Text>
+
+        <Text style={styles.label}>Next dose here</Text>
+        <Text style={styles.value}>{nextDoseLocal}</Text>
+
+        <Text style={styles.label}>Next dose (UTC)</Text>
+        <Text style={styles.value}>{nextDoseUtc}</Text>
 
         <Text style={styles.label}>First dose (UTC)</Text>
         <Text style={styles.value}>{mockMedication.firstDoseUtc}</Text>
