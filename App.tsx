@@ -697,9 +697,6 @@ export default function App() {
             autoCapitalize="none"
             style={styles.input}
           />
-          <Text style={styles.helperText}>
-            For the hackathon version, use a full UTC time ending in Z.
-          </Text>
 
           <Text style={styles.inputLabel}>Home timezone</Text>
           <TextInput
