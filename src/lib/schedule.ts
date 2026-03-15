@@ -56,5 +56,30 @@ export function formatDoseForTimezone(doseUtc: string, timezone: string) {
     return "Invalid time";
   }
 
-  return dose.setZone(timezone).toFormat("ccc, LLL d 'at' h:mm a");
+  return dose.setZone(timezone).toFormat("ccc, LLL d • HH:mm");
+}
+
+export function formatDoseTimeForTimezone(doseUtc: string, timezone: string) {
+  const dose = DateTime.fromISO(doseUtc, { zone: "utc" });
+
+  if (!dose.isValid) {
+    return "Invalid time";
+  }
+
+  return dose.setZone(timezone).toFormat("HH:mm");
+}
+
+export function formatDoseDateForTimezone(doseUtc: string, timezone: string) {
+  const dose = DateTime.fromISO(doseUtc, { zone: "utc" });
+
+  if (!dose.isValid) {
+    return "Invalid date";
+  }
+
+  return dose.setZone(timezone).toFormat("ccc, LLL d");
+}
+
+export function formatTimezoneName(timezone: string) {
+  const shortName = timezone.split("/").pop() ?? timezone;
+  return shortName.replaceAll("_", " ");
 }

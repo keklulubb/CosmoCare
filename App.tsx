@@ -20,7 +20,10 @@ import {
 } from "react-native";
 import { mockMedications } from "./src/data/mockMedications";
 import {
+  formatDoseDateForTimezone,
   formatDoseForTimezone,
+  formatDoseTimeForTimezone,
+  formatTimezoneName,
   getCurrentTimezone,
   getNextDose,
   getUpcomingDoses,
@@ -227,7 +230,7 @@ export default function App() {
       await Notifications.scheduleNotificationAsync({
         content: {
           title: `${reminder.name} is due`,
-          body: `Next dose scheduled for ${formatDoseForTimezone(
+          body: `Next reminder scheduled for ${formatDoseForTimezone(
             doseUtc,
             currentTimezone,
           )}`,
@@ -425,8 +428,8 @@ export default function App() {
               {Platform.OS === "web"
                 ? "Web is perfect for your demo. Local device reminders are available on iOS and Android."
                 : notificationPermission === "granted"
-                  ? "Local reminders are armed. CosmoCare will schedule your next doses on this device."
-                  : "Enable device reminders so your next dose still reaches you after a timezone jump."}
+                  ? "Local reminders are armed. CosmoCare will schedule your upcoming reminders on this device."
+                  : "Enable device reminders so your next reminder still reaches you after a timezone jump."}
             </Text>
 
             {Platform.OS !== "web" && notificationPermission !== "granted" ? (
@@ -470,9 +473,17 @@ export default function App() {
 
         {visibleReminders.map((reminder) => {
           const nextDoseUtc = getNextDose(reminder);
-          const nextDoseLocal = formatDoseForTimezone(
+          const nextDoseLocalTime = formatDoseTimeForTimezone(
             nextDoseUtc,
             currentTimezone,
+          );
+          const nextDoseLocalDate = formatDoseDateForTimezone(
+            nextDoseUtc,
+            currentTimezone,
+          );
+          const nextDoseHomeTime = formatDoseTimeForTimezone(
+            nextDoseUtc,
+            reminder.homeTimezone,
           );
 
           return (
@@ -492,8 +503,21 @@ export default function App() {
                 <Text style={styles.reminderMeta}>
                   Every {reminder.intervalHours} hours
                 </Text>
-                <Text style={styles.cardLabel}>Next dose here</Text>
-                <Text style={styles.nextDoseText}>{nextDoseLocal}</Text>
+                <Text style={styles.cardLabel}>Next reminder here</Text>
+                <Text style={styles.nextDoseText}>{nextDoseLocalTime}</Text>
+                <Text style={styles.reminderSubmeta}>{nextDoseLocalDate}</Text>
+                <View style={styles.timeComparisonRow}>
+                  <View style={styles.timePill}>
+                    <Text style={styles.timePillLabel}>Here</Text>
+                    <Text style={styles.timePillValue}>{nextDoseLocalTime}</Text>
+                  </View>
+                  <View style={styles.timePill}>
+                    <Text style={styles.timePillLabel}>
+                      {formatTimezoneName(reminder.homeTimezone)}
+                    </Text>
+                    <Text style={styles.timePillValue}>{nextDoseHomeTime}</Text>
+                  </View>
+                </View>
               </LinearGradient>
             </Pressable>
           );
@@ -519,7 +543,16 @@ export default function App() {
     }
 
     const nextDoseUtc = getNextDose(selectedReminder);
-    const nextDoseLocal = formatDoseForTimezone(nextDoseUtc, currentTimezone);
+    const nextDoseLocal = formatDoseTimeForTimezone(nextDoseUtc, currentTimezone);
+    const nextDoseLocalDate = formatDoseForTimezone(nextDoseUtc, currentTimezone);
+    const nextDoseHome = formatDoseTimeForTimezone(
+      nextDoseUtc,
+      selectedReminder.homeTimezone,
+    );
+    const nextDoseHomeDate = formatDoseForTimezone(
+      nextDoseUtc,
+      selectedReminder.homeTimezone,
+    );
     const upcomingDoses = getUpcomingDoses(selectedReminder, 3);
 
     return (
@@ -543,22 +576,50 @@ export default function App() {
           end={{ x: 1, y: 1 }}
           style={styles.detailCard}
         >
-          <Text style={styles.cardLabel}>Next dose here</Text>
+          <Text style={styles.cardLabel}>Next reminder here</Text>
           <Text style={styles.heroValue}>{nextDoseLocal}</Text>
+          <Text style={styles.heroSubvalue}>
+            {nextDoseLocalDate} • {formatTimezoneName(currentTimezone)}
+          </Text>
 
-          <Text style={styles.cardLabel}>Next dose (UTC)</Text>
-          <Text style={styles.cardValue}>{nextDoseUtc}</Text>
+          <Text style={styles.cardLabel}>Time comparison</Text>
+          <View style={styles.detailTimeGrid}>
+            <View style={styles.detailTimeCard}>
+              <Text style={styles.detailTimeLabel}>
+                {formatTimezoneName(currentTimezone)}
+              </Text>
+              <Text style={styles.detailTimeValue}>{nextDoseLocal}</Text>
+            </View>
+            <View style={styles.detailTimeCard}>
+              <Text style={styles.detailTimeLabel}>
+                {formatTimezoneName(selectedReminder.homeTimezone)}
+              </Text>
+              <Text style={styles.detailTimeValue}>{nextDoseHome}</Text>
+            </View>
+          </View>
+
+          <Text style={styles.cardLabel}>Home clock</Text>
+          <Text style={styles.cardValue}>{nextDoseHomeDate}</Text>
+
+          <Text style={styles.cardLabel}>UTC anchor</Text>
+          <Text style={styles.cardValue}>
+            {formatDoseForTimezone(nextDoseUtc, "UTC")}
+          </Text>
 
           <Text style={styles.cardLabel}>Interval</Text>
           <Text style={styles.cardValue}>
             Every {selectedReminder.intervalHours} hours
           </Text>
 
-          <Text style={styles.cardLabel}>First dose (UTC)</Text>
-          <Text style={styles.cardValue}>{selectedReminder.firstDoseUtc}</Text>
+          <Text style={styles.cardLabel}>First dose anchor</Text>
+          <Text style={styles.cardValue}>
+            {formatDoseForTimezone(selectedReminder.firstDoseUtc, "UTC")}
+          </Text>
 
           <Text style={styles.cardLabel}>Home timezone</Text>
-          <Text style={styles.cardValue}>{selectedReminder.homeTimezone}</Text>
+          <Text style={styles.cardValue}>
+            {formatTimezoneName(selectedReminder.homeTimezone)}
+          </Text>
 
           {selectedReminder.notes ? (
             <>
@@ -567,7 +628,7 @@ export default function App() {
             </>
           ) : null}
 
-          <Text style={styles.cardLabel}>Upcoming doses</Text>
+          <Text style={styles.cardLabel}>Upcoming reminders</Text>
           {upcomingDoses.map((doseUtc, index) => (
             <Text key={`${doseUtc}-${index}`} style={styles.upcomingDose}>
               {index + 1}. {formatDoseForTimezone(doseUtc, currentTimezone)}
@@ -961,6 +1022,12 @@ const styles = StyleSheet.create({
     fontSize: 15,
     marginTop: 8,
   },
+  reminderSubmeta: {
+    color: "#c9f1ff",
+    fontFamily: "Fredoka_500Medium",
+    fontSize: 14,
+    marginTop: 4,
+  },
   cardLabel: {
     color: "#9ce4ff",
     fontFamily: "Fredoka_600SemiBold",
@@ -975,6 +1042,30 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     marginTop: 6,
     maxWidth: 240,
+  },
+  timeComparisonRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 14,
+  },
+  timePill: {
+    backgroundColor: "rgba(11, 10, 38, 0.34)",
+    borderColor: "rgba(255, 255, 255, 0.12)",
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  timePillLabel: {
+    color: "#c9d8ff",
+    fontFamily: "Fredoka_500Medium",
+    fontSize: 12,
+  },
+  timePillValue: {
+    color: "#ffffff",
+    fontFamily: "Fredoka_700Bold",
+    fontSize: 18,
+    marginTop: 4,
   },
   emptyCard: {
     borderColor: "rgba(227, 215, 255, 0.16)",
@@ -1020,6 +1111,13 @@ const styles = StyleSheet.create({
     lineHeight: 34,
     marginTop: 8,
   },
+  heroSubvalue: {
+    color: "#d9d1ff",
+    fontFamily: "Fredoka_500Medium",
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 6,
+  },
   cardValue: {
     color: "#f4efff",
     fontFamily: "Fredoka_500Medium",
@@ -1032,6 +1130,30 @@ const styles = StyleSheet.create({
     fontFamily: "Fredoka_500Medium",
     fontSize: 15,
     lineHeight: 22,
+    marginTop: 8,
+  },
+  detailTimeGrid: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 10,
+  },
+  detailTimeCard: {
+    backgroundColor: "rgba(11, 10, 38, 0.34)",
+    borderColor: "rgba(255, 255, 255, 0.12)",
+    borderRadius: 20,
+    borderWidth: 1,
+    flex: 1,
+    padding: 14,
+  },
+  detailTimeLabel: {
+    color: "#d9d1ff",
+    fontFamily: "Fredoka_500Medium",
+    fontSize: 13,
+  },
+  detailTimeValue: {
+    color: "#ffffff",
+    fontFamily: "Fredoka_700Bold",
+    fontSize: 28,
     marginTop: 8,
   },
   secondaryButton: {
