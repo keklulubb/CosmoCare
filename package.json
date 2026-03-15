@@ -9,9 +9,12 @@
     "web": "expo start --web"
   },
   "dependencies": {
+    "@expo-google-fonts/fredoka": "^0.4.1",
     "@expo/metro-runtime": "~55.0.6",
     "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "~55.0.6",
+    "expo-font": "~55.0.4",
+    "expo-linear-gradient": "~55.0.8",
     "expo-notifications": "~55.0.12",
     "expo-status-bar": "~55.0.4",
     "luxon": "^3.7.2",

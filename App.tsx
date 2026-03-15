@@ -1,6 +1,16 @@
 import { StatusBar } from "expo-status-bar";
-import { useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
+  Fredoka_500Medium,
+  Fredoka_600SemiBold,
+  Fredoka_700Bold,
+  useFonts,
+} from "@expo-google-fonts/fredoka";
+import { LinearGradient } from "expo-linear-gradient";
+import * as Notifications from "expo-notifications";
+import { useEffect, useState } from "react";
+import {
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -18,9 +28,37 @@ import {
 import type { MedicationSchedule } from "./src/types/medication";
 
 const HOME_PREVIEW_COUNT = 2;
+const STORAGE_KEY = "@cosmocare/reminders";
+const UPCOMING_NOTIFICATION_COUNT = 3;
 const WELCOME_NAME = "Traveler";
+const STAR_POSITIONS = [
+  { top: 54, left: 28, size: 18, opacity: 0.85, color: "#ffffff" },
+  { top: 96, right: 36, size: 14, opacity: 0.65, color: "#d7c3ff" },
+  { top: 150, left: 116, size: 12, opacity: 0.6, color: "#9de1ff" },
+  { top: 208, right: 86, size: 16, opacity: 0.88, color: "#ffffff" },
+  { top: 250, left: 314, size: 10, opacity: 0.52, color: "#d7c3ff" },
+  { top: 326, left: 22, size: 20, opacity: 0.76, color: "#ffffff" },
+  { top: 384, right: 30, size: 12, opacity: 0.58, color: "#9de1ff" },
+  { top: 472, left: 56, size: 14, opacity: 0.72, color: "#ffffff" },
+  { top: 518, right: 106, size: 18, opacity: 0.7, color: "#d7c3ff" },
+  { top: 604, left: 266, size: 12, opacity: 0.62, color: "#ffffff" },
+  { top: 690, left: 78, size: 16, opacity: 0.78, color: "#9de1ff" },
+  { top: 764, right: 44, size: 14, opacity: 0.74, color: "#ffffff" },
+];
 
 type Screen = "home" | "detail" | "create";
+type NotificationPermission = "idle" | "granted" | "denied" | "unsupported";
+
+if (Platform.OS !== "web") {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+}
 
 function getDefaultFirstDoseUtc() {
   const nextHour = new Date();
@@ -30,6 +68,12 @@ function getDefaultFirstDoseUtc() {
 }
 
 export default function App() {
+  const [fontsLoaded] = useFonts({
+    Fredoka_500Medium,
+    Fredoka_600SemiBold,
+    Fredoka_700Bold,
+  });
+
   const currentTimezone = getCurrentTimezone();
   const [screen, setScreen] = useState<Screen>("home");
   const [reminders, setReminders] =
@@ -45,6 +89,11 @@ export default function App() {
   const [homeTimezoneInput, setHomeTimezoneInput] = useState(currentTimezone);
   const [notesInput, setNotesInput] = useState("");
   const [formError, setFormError] = useState("");
+  const [hasHydratedStorage, setHasHydratedStorage] = useState(false);
+  const [notificationPermission, setNotificationPermission] =
+    useState<NotificationPermission>(
+      Platform.OS === "web" ? "unsupported" : "idle",
+    );
 
   const visibleReminders = showAllReminders
     ? reminders
@@ -54,6 +103,155 @@ export default function App() {
     reminders.find((reminder) => reminder.id === selectedReminderId) ??
     reminders[0] ??
     null;
+
+  useEffect(() => {
+    async function loadStoredReminders() {
+      try {
+        const storedValue = await AsyncStorage.getItem(STORAGE_KEY);
+
+        if (!storedValue) {
+          return;
+        }
+
+        const parsedValue = JSON.parse(storedValue) as MedicationSchedule[];
+
+        if (!Array.isArray(parsedValue)) {
+          return;
+        }
+
+        setReminders(parsedValue);
+        setSelectedReminderId(parsedValue[0]?.id ?? null);
+      } catch (error) {
+        console.warn("Unable to load reminders from storage", error);
+      } finally {
+        setHasHydratedStorage(true);
+      }
+    }
+
+    void loadStoredReminders();
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydratedStorage) {
+      return;
+    }
+
+    void AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(reminders));
+  }, [hasHydratedStorage, reminders]);
+
+  useEffect(() => {
+    if (Platform.OS === "web") {
+      return;
+    }
+
+    async function loadNotificationPermissions() {
+      const permissions = await Notifications.getPermissionsAsync();
+      setNotificationPermission(permissions.granted ? "granted" : "denied");
+    }
+
+    void loadNotificationPermissions();
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydratedStorage) {
+      return;
+    }
+
+    if (notificationPermission !== "granted" || Platform.OS === "web") {
+      return;
+    }
+
+    void syncNotifications(reminders);
+  }, [currentTimezone, hasHydratedStorage, notificationPermission, reminders]);
+
+  async function configureAndroidChannel() {
+    if (Platform.OS !== "android") {
+      return;
+    }
+
+    await Notifications.setNotificationChannelAsync("medication-reminders", {
+      name: "Medication reminders",
+      importance: Notifications.AndroidImportance.HIGH,
+      vibrationPattern: [0, 250, 200, 250],
+      lightColor: "#9B87FF",
+    });
+  }
+
+  async function requestNotificationAccess() {
+    if (Platform.OS === "web") {
+      setNotificationPermission("unsupported");
+      return false;
+    }
+
+    await configureAndroidChannel();
+
+    const existingPermissions = await Notifications.getPermissionsAsync();
+    let granted = existingPermissions.granted;
+
+    if (!granted) {
+      const requestedPermissions = await Notifications.requestPermissionsAsync();
+      granted = requestedPermissions.granted;
+    }
+
+    setNotificationPermission(granted ? "granted" : "denied");
+    return granted;
+  }
+
+  async function syncNotifications(remindersToSchedule: MedicationSchedule[]) {
+    if (Platform.OS === "web") {
+      return;
+    }
+
+    await Notifications.cancelAllScheduledNotificationsAsync();
+
+    const upcomingDates = remindersToSchedule.flatMap((reminder) => {
+      return getUpcomingDoses(reminder, UPCOMING_NOTIFICATION_COUNT).map(
+        (doseUtc) => ({
+          reminder,
+          doseUtc,
+        }),
+      );
+    });
+
+    for (const { reminder, doseUtc } of upcomingDates) {
+      const triggerDate = new Date(doseUtc);
+
+      if (Number.isNaN(triggerDate.getTime())) {
+        continue;
+      }
+
+      if (triggerDate.getTime() <= Date.now() + 3000) {
+        continue;
+      }
+
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: `${reminder.name} is due`,
+          body: `Next dose scheduled for ${formatDoseForTimezone(
+            doseUtc,
+            currentTimezone,
+          )}`,
+          data: {
+            reminderId: reminder.id,
+          },
+        },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.DATE,
+          date: triggerDate,
+        },
+      });
+    }
+  }
+
+  async function handleEnableReminders() {
+    const granted = await requestNotificationAccess();
+
+    if (!granted) {
+      return;
+    }
+
+    await syncNotifications(reminders);
+  }
 
   function openReminder(reminderId: string) {
     setSelectedReminderId(reminderId);
@@ -129,44 +327,145 @@ export default function App() {
     setScreen("home");
   }
 
+  function renderBackground() {
+    return (
+      <View pointerEvents="none" style={styles.backgroundLayer}>
+        <LinearGradient
+          colors={["#070312", "#13082e", "#1f1a63", "#11448f"]}
+          locations={[0, 0.32, 0.68, 1]}
+          start={{ x: 0.1, y: 0 }}
+          end={{ x: 0.95, y: 1 }}
+          style={styles.gradientBackdrop}
+        />
+        <LinearGradient
+          colors={["rgba(164, 132, 255, 0.72)", "rgba(164, 132, 255, 0)"]}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 1 }}
+          style={styles.nebulaGlowOne}
+        />
+        <LinearGradient
+          colors={["rgba(110, 210, 255, 0.55)", "rgba(110, 210, 255, 0)"]}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 1 }}
+          style={styles.nebulaGlowTwo}
+        />
+        <LinearGradient
+          colors={["#a586ff", "#6ccfff"]}
+          start={{ x: 0.1, y: 0.1 }}
+          end={{ x: 0.9, y: 0.9 }}
+          style={styles.planetGlow}
+        />
+        <View style={styles.planetHalo} />
+        <View style={styles.orbitRingLarge} />
+        <View style={styles.orbitRingSmall} />
+
+        {STAR_POSITIONS.map((star, index) => (
+          <Text
+            key={index}
+            style={[
+              styles.starGlyph,
+              {
+                color: star.color,
+                fontSize: star.size,
+                opacity: star.opacity,
+                top: star.top,
+              },
+              "left" in star ? { left: star.left } : { right: star.right },
+            ]}
+          >
+            ✦
+          </Text>
+        ))}
+      </View>
+    );
+  }
+
   function renderHomeScreen() {
     return (
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator
+        showsVerticalScrollIndicator={false}
       >
         <Text style={styles.eyebrow}>Travel-safe medication reminders</Text>
         <Text style={styles.title}>Welcome back, {WELCOME_NAME}</Text>
+        <Text style={styles.heroTagline}>Where care takes orbit.</Text>
         <Text style={styles.subtitle}>
-          Your reminders stay aligned while your timezone changes.
+          Your schedule stays steady across timezones, flights, and late-night
+          layovers.
         </Text>
 
-        <View style={styles.summaryCard}>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Active reminders</Text>
-            <Text style={styles.summaryValue}>{reminders.length}</Text>
+        <LinearGradient
+          colors={["rgba(93, 64, 197, 0.82)", "rgba(28, 74, 167, 0.78)"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.summaryCard}
+        >
+          <View style={styles.summaryHeader}>
+            <Text style={styles.summaryTitle}>Orbit board</Text>
+            <View style={styles.signalPill}>
+              <Text style={styles.signalText}>Travel safe</Text>
+            </View>
           </View>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Current timezone</Text>
-            <Text style={styles.summaryTimezone}>{currentTimezone}</Text>
+
+          <View style={styles.summaryMetrics}>
+            <View style={styles.metricCard}>
+              <Text style={styles.summaryLabel}>Active reminders</Text>
+              <Text style={styles.summaryValue}>{reminders.length}</Text>
+            </View>
+            <View style={styles.metricCard}>
+              <Text style={styles.summaryLabel}>Current timezone</Text>
+              <Text style={styles.summaryTimezone}>{currentTimezone}</Text>
+            </View>
           </View>
-        </View>
+
+          <View style={styles.notificationCard}>
+            <Text style={styles.notificationTitle}>Ready for takeoff</Text>
+            <Text style={styles.notificationBody}>
+              {Platform.OS === "web"
+                ? "Web is perfect for your demo. Local device reminders are available on iOS and Android."
+                : notificationPermission === "granted"
+                  ? "Local reminders are armed. CosmoCare will schedule your next doses on this device."
+                  : "Enable device reminders so your next dose still reaches you after a timezone jump."}
+            </Text>
+
+            {Platform.OS !== "web" && notificationPermission !== "granted" ? (
+              <Pressable
+                onPress={() => void handleEnableReminders()}
+                style={styles.ghostButton}
+              >
+                <Text style={styles.ghostButtonText}>Enable reminders</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </LinearGradient>
 
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Your reminders</Text>
           <Pressable onPress={openCreateScreen} style={styles.primaryButton}>
-            <Text style={styles.primaryButtonText}>Schedule new</Text>
+            <LinearGradient
+              colors={["#d5beff", "#8be0ff"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.primaryButtonFill}
+            >
+              <Text style={styles.primaryButtonText}>Schedule new</Text>
+            </LinearGradient>
           </Pressable>
         </View>
 
         {visibleReminders.length === 0 ? (
-          <View style={styles.emptyCard}>
+          <LinearGradient
+            colors={["rgba(64, 35, 125, 0.88)", "rgba(17, 42, 89, 0.88)"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.emptyCard}
+          >
             <Text style={styles.emptyTitle}>No reminders in orbit yet</Text>
             <Text style={styles.emptyBody}>
               Schedule your first travel-safe reminder to get started.
             </Text>
-          </View>
+          </LinearGradient>
         ) : null}
 
         {visibleReminders.map((reminder) => {
@@ -180,14 +479,22 @@ export default function App() {
             <Pressable
               key={reminder.id}
               onPress={() => openReminder(reminder.id)}
-              style={styles.reminderCard}
+              style={styles.reminderPressable}
             >
-              <Text style={styles.reminderName}>{reminder.name}</Text>
-              <Text style={styles.reminderMeta}>
-                Every {reminder.intervalHours} hours
-              </Text>
-              <Text style={styles.cardLabel}>Next dose here</Text>
-              <Text style={styles.nextDoseText}>{nextDoseLocal}</Text>
+              <LinearGradient
+                colors={["rgba(63, 32, 121, 0.9)", "rgba(17, 44, 94, 0.88)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.reminderCard}
+              >
+                <View style={styles.cardOrbit} />
+                <Text style={styles.reminderName}>{reminder.name}</Text>
+                <Text style={styles.reminderMeta}>
+                  Every {reminder.intervalHours} hours
+                </Text>
+                <Text style={styles.cardLabel}>Next dose here</Text>
+                <Text style={styles.nextDoseText}>{nextDoseLocal}</Text>
+              </LinearGradient>
             </Pressable>
           );
         })}
@@ -219,6 +526,7 @@ export default function App() {
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
       >
         <Pressable onPress={() => setScreen("home")} style={styles.backButton}>
           <Text style={styles.backButtonText}>Back to reminders</Text>
@@ -226,10 +534,15 @@ export default function App() {
 
         <Text style={styles.title}>{selectedReminder.name}</Text>
         <Text style={styles.subtitle}>
-          Full overview for this reminder while traveling.
+          A full orbit overview for this reminder while you travel.
         </Text>
 
-        <View style={styles.detailCard}>
+        <LinearGradient
+          colors={["rgba(63, 32, 121, 0.9)", "rgba(17, 44, 94, 0.88)"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.detailCard}
+        >
           <Text style={styles.cardLabel}>Next dose here</Text>
           <Text style={styles.heroValue}>{nextDoseLocal}</Text>
 
@@ -260,14 +573,14 @@ export default function App() {
               {index + 1}. {formatDoseForTimezone(doseUtc, currentTimezone)}
             </Text>
           ))}
-        </View>
+        </LinearGradient>
 
         <Pressable onPress={openCreateScreen} style={styles.secondaryButton}>
           <Text style={styles.secondaryButtonText}>Schedule another</Text>
         </Pressable>
 
         <Pressable onPress={handleDeleteReminder} style={styles.dangerButton}>
-          <Text style={styles.dangerButtonText}>Remove reminder</Text>
+          <Text style={styles.dangerButtonText}>Delete reminder</Text>
         </Pressable>
       </ScrollView>
     );
@@ -278,6 +591,7 @@ export default function App() {
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
       >
         <Pressable onPress={() => setScreen("home")} style={styles.backButton}>
           <Text style={styles.backButtonText}>Back to reminders</Text>
@@ -285,16 +599,21 @@ export default function App() {
 
         <Text style={styles.title}>Schedule new</Text>
         <Text style={styles.subtitle}>
-          Add a reminder and keep its schedule anchored while you travel.
+          Build a new reminder and keep it steady across timezone changes.
         </Text>
 
-        <View style={styles.detailCard}>
+        <LinearGradient
+          colors={["rgba(63, 32, 121, 0.9)", "rgba(17, 44, 94, 0.88)"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.detailCard}
+        >
           <Text style={styles.inputLabel}>Reminder name</Text>
           <TextInput
             value={nameInput}
             onChangeText={setNameInput}
             placeholder="Amoxicillin"
-            placeholderTextColor="#6f7a9c"
+            placeholderTextColor="#b9aef2"
             style={styles.input}
           />
 
@@ -303,7 +622,7 @@ export default function App() {
             value={intervalInput}
             onChangeText={setIntervalInput}
             placeholder="8"
-            placeholderTextColor="#6f7a9c"
+            placeholderTextColor="#b9aef2"
             keyboardType="number-pad"
             style={styles.input}
           />
@@ -313,12 +632,12 @@ export default function App() {
             value={firstDoseInput}
             onChangeText={setFirstDoseInput}
             placeholder="2026-03-14T21:00:00.000Z"
-            placeholderTextColor="#6f7a9c"
+            placeholderTextColor="#b9aef2"
             autoCapitalize="none"
             style={styles.input}
           />
           <Text style={styles.helperText}>
-            Use a full UTC time ending in Z for this hackathon version.
+            For the hackathon version, use a full UTC time ending in Z.
           </Text>
 
           <Text style={styles.inputLabel}>Home timezone</Text>
@@ -326,7 +645,7 @@ export default function App() {
             value={homeTimezoneInput}
             onChangeText={setHomeTimezoneInput}
             placeholder="Europe/Amsterdam"
-            placeholderTextColor="#6f7a9c"
+            placeholderTextColor="#b9aef2"
             autoCapitalize="none"
             style={styles.input}
           />
@@ -336,7 +655,7 @@ export default function App() {
             value={notesInput}
             onChangeText={setNotesInput}
             placeholder="Take after food"
-            placeholderTextColor="#6f7a9c"
+            placeholderTextColor="#b9aef2"
             multiline
             style={[styles.input, styles.notesInput]}
           />
@@ -344,18 +663,30 @@ export default function App() {
           {formError ? <Text style={styles.errorText}>{formError}</Text> : null}
 
           <Pressable onPress={handleSaveReminder} style={styles.primaryButton}>
-            <Text style={styles.primaryButtonText}>Save reminder</Text>
+            <LinearGradient
+              colors={["#d5beff", "#8be0ff"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.primaryButtonFill}
+            >
+              <Text style={styles.primaryButtonText}>Save reminder</Text>
+            </LinearGradient>
           </Pressable>
-        </View>
+        </LinearGradient>
       </ScrollView>
     );
   }
 
   return (
     <View style={styles.container}>
-      {screen === "home" ? renderHomeScreen() : null}
-      {screen === "detail" ? renderDetailScreen() : null}
-      {screen === "create" ? renderCreateScreen() : null}
+      {renderBackground()}
+      {fontsLoaded ? (
+        <>
+          {screen === "home" ? renderHomeScreen() : null}
+          {screen === "detail" ? renderDetailScreen() : null}
+          {screen === "create" ? renderCreateScreen() : null}
+        </>
+      ) : null}
       <StatusBar style="light" />
     </View>
   );
@@ -364,146 +695,303 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#0b1020",
+    backgroundColor: "#070312",
+  },
+  backgroundLayer: {
+    ...StyleSheet.absoluteFillObject,
+    overflow: "hidden",
+  },
+  gradientBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  nebulaGlowOne: {
+    borderRadius: 260,
+    height: 520,
+    left: -120,
+    position: "absolute",
+    top: -80,
+    width: 520,
+  },
+  nebulaGlowTwo: {
+    borderRadius: 220,
+    height: 440,
+    position: "absolute",
+    right: -110,
+    top: 250,
+    width: 440,
+  },
+  planetGlow: {
+    borderRadius: 110,
+    height: 220,
+    position: "absolute",
+    right: -26,
+    top: 94,
+    width: 220,
+  },
+  planetHalo: {
+    borderColor: "rgba(233, 226, 255, 0.28)",
+    borderRadius: 150,
+    borderWidth: 1.5,
+    height: 280,
+    position: "absolute",
+    right: -56,
+    top: 58,
+    width: 280,
+  },
+  orbitRingLarge: {
+    borderColor: "rgba(167, 214, 255, 0.16)",
+    borderRadius: 260,
+    borderWidth: 1.25,
+    height: 520,
+    left: -170,
+    position: "absolute",
+    top: 430,
+    width: 520,
+  },
+  orbitRingSmall: {
+    borderColor: "rgba(215, 195, 255, 0.18)",
+    borderRadius: 170,
+    borderWidth: 1.25,
+    height: 340,
+    position: "absolute",
+    right: -90,
+    top: 520,
+    width: 340,
+  },
+  starGlyph: {
+    position: "absolute",
+    textShadowColor: "rgba(255, 255, 255, 0.9)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    flexGrow: 1,
+    paddingBottom: 72,
     paddingHorizontal: 24,
-    paddingTop: 84,
-    paddingBottom: 40,
+    paddingTop: 78,
   },
   eyebrow: {
-    color: "#87c6ff",
+    color: "#8be0ff",
+    fontFamily: "Fredoka_600SemiBold",
     fontSize: 13,
-    fontWeight: "600",
-    letterSpacing: 1,
-    marginBottom: 10,
+    letterSpacing: 1.2,
+    marginBottom: 8,
     textTransform: "uppercase",
   },
   title: {
     color: "#ffffff",
-    fontSize: 30,
-    fontWeight: "700",
+    fontFamily: "Fredoka_700Bold",
+    fontSize: 36,
+    lineHeight: 40,
+  },
+  heroTagline: {
+    color: "#ead9ff",
+    fontFamily: "Fredoka_600SemiBold",
+    fontSize: 20,
+    marginTop: 8,
   },
   subtitle: {
-    color: "#9aa4c7",
+    color: "#d7cdf5",
+    fontFamily: "Fredoka_500Medium",
     fontSize: 16,
     lineHeight: 24,
     marginTop: 10,
+    maxWidth: 320,
   },
   summaryCard: {
-    backgroundColor: "#12182d",
-    borderColor: "#1f2a4d",
-    borderRadius: 20,
+    borderColor: "rgba(221, 210, 255, 0.18)",
+    borderRadius: 28,
     borderWidth: 1,
-    marginTop: 24,
+    marginTop: 28,
+    overflow: "hidden",
     padding: 18,
   },
-  summaryRow: {
+  summaryHeader: {
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
-    marginTop: 8,
+  },
+  summaryTitle: {
+    color: "#ffffff",
+    fontFamily: "Fredoka_700Bold",
+    fontSize: 22,
+  },
+  signalPill: {
+    backgroundColor: "rgba(255, 255, 255, 0.14)",
+    borderColor: "rgba(255, 255, 255, 0.22)",
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  signalText: {
+    color: "#ffffff",
+    fontFamily: "Fredoka_600SemiBold",
+    fontSize: 12,
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+  summaryMetrics: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 16,
+  },
+  metricCard: {
+    backgroundColor: "rgba(11, 10, 38, 0.42)",
+    borderColor: "rgba(255, 255, 255, 0.12)",
+    borderRadius: 22,
+    borderWidth: 1,
+    flex: 1,
+    minHeight: 102,
+    padding: 14,
   },
   summaryLabel: {
-    color: "#9aa4c7",
+    color: "#d9d2ff",
+    fontFamily: "Fredoka_500Medium",
     fontSize: 14,
   },
   summaryValue: {
     color: "#ffffff",
-    fontSize: 22,
-    fontWeight: "700",
+    fontFamily: "Fredoka_700Bold",
+    fontSize: 28,
+    marginTop: 10,
   },
   summaryTimezone: {
-    color: "#d4dcf8",
+    color: "#ffffff",
+    fontFamily: "Fredoka_600SemiBold",
     fontSize: 15,
-    fontWeight: "600",
+    lineHeight: 20,
+    marginTop: 10,
+  },
+  notificationCard: {
+    backgroundColor: "rgba(11, 10, 38, 0.32)",
+    borderColor: "rgba(255, 255, 255, 0.1)",
+    borderRadius: 22,
+    borderWidth: 1,
+    marginTop: 16,
+    padding: 14,
+  },
+  notificationTitle: {
+    color: "#ffffff",
+    fontFamily: "Fredoka_700Bold",
+    fontSize: 16,
+  },
+  notificationBody: {
+    color: "#e5ddff",
+    fontFamily: "Fredoka_500Medium",
+    fontSize: 14,
+    lineHeight: 22,
+    marginTop: 8,
+  },
+  ghostButton: {
+    alignSelf: "flex-start",
+    backgroundColor: "rgba(255, 255, 255, 0.12)",
+    borderColor: "rgba(255, 255, 255, 0.18)",
+    borderRadius: 999,
+    borderWidth: 1,
+    marginTop: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  ghostButtonText: {
+    color: "#ffffff",
+    fontFamily: "Fredoka_600SemiBold",
+    fontSize: 14,
   },
   sectionHeader: {
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
+    marginBottom: 10,
     marginTop: 28,
-    marginBottom: 8,
   },
   sectionTitle: {
     color: "#ffffff",
-    fontSize: 22,
-    fontWeight: "700",
+    fontFamily: "Fredoka_700Bold",
+    fontSize: 24,
+  },
+  primaryButton: {
+    borderRadius: 999,
+    overflow: "hidden",
+  },
+  primaryButtonFill: {
+    borderRadius: 999,
+    minWidth: 136,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+  },
+  primaryButtonText: {
+    color: "#1c1344",
+    fontFamily: "Fredoka_700Bold",
+    fontSize: 15,
+    textAlign: "center",
+  },
+  reminderPressable: {
+    marginTop: 14,
   },
   reminderCard: {
-    backgroundColor: "#151b31",
-    borderColor: "#212b4f",
-    borderRadius: 18,
+    borderColor: "rgba(227, 215, 255, 0.16)",
+    borderRadius: 26,
     borderWidth: 1,
-    marginTop: 14,
-    padding: 18,
+    minHeight: 156,
+    overflow: "hidden",
+    padding: 20,
+    position: "relative",
   },
-  emptyCard: {
-    backgroundColor: "#151b31",
-    borderColor: "#212b4f",
-    borderRadius: 18,
-    borderWidth: 1,
-    marginTop: 14,
-    padding: 18,
-  },
-  emptyTitle: {
-    color: "#ffffff",
-    fontSize: 18,
-    fontWeight: "700",
-  },
-  emptyBody: {
-    color: "#9aa4c7",
-    fontSize: 15,
-    lineHeight: 22,
-    marginTop: 8,
+  cardOrbit: {
+    borderColor: "rgba(194, 230, 255, 0.22)",
+    borderRadius: 120,
+    borderWidth: 1.5,
+    height: 200,
+    position: "absolute",
+    right: -72,
+    top: -40,
+    width: 200,
   },
   reminderName: {
     color: "#ffffff",
-    fontSize: 20,
-    fontWeight: "700",
+    fontFamily: "Fredoka_700Bold",
+    fontSize: 24,
   },
   reminderMeta: {
-    color: "#8f99bc",
+    color: "#ded8ff",
+    fontFamily: "Fredoka_500Medium",
     fontSize: 15,
-    marginTop: 6,
+    marginTop: 8,
   },
   cardLabel: {
-    color: "#8ca0d4",
+    color: "#9ce4ff",
+    fontFamily: "Fredoka_600SemiBold",
     fontSize: 13,
-    marginTop: 14,
+    letterSpacing: 0.2,
+    marginTop: 16,
   },
   nextDoseText: {
     color: "#ffffff",
+    fontFamily: "Fredoka_700Bold",
     fontSize: 18,
-    fontWeight: "600",
-    marginTop: 6,
-  },
-  detailCard: {
-    backgroundColor: "#12182d",
-    borderColor: "#1f2a4d",
-    borderRadius: 20,
-    borderWidth: 1,
-    marginTop: 24,
-    padding: 20,
-  },
-  heroValue: {
-    color: "#ffffff",
-    fontSize: 24,
-    fontWeight: "700",
-    marginTop: 6,
-  },
-  cardValue: {
-    color: "#e8edff",
-    fontSize: 16,
     lineHeight: 24,
     marginTop: 6,
+    maxWidth: 240,
   },
-  upcomingDose: {
+  emptyCard: {
+    borderColor: "rgba(227, 215, 255, 0.16)",
+    borderRadius: 26,
+    borderWidth: 1,
+    marginTop: 14,
+    overflow: "hidden",
+    padding: 20,
+  },
+  emptyTitle: {
     color: "#ffffff",
+    fontFamily: "Fredoka_700Bold",
+    fontSize: 22,
+  },
+  emptyBody: {
+    color: "#dfd8ff",
+    fontFamily: "Fredoka_500Medium",
     fontSize: 15,
     lineHeight: 22,
     marginTop: 8,
@@ -513,60 +1001,81 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   backButtonText: {
-    color: "#87c6ff",
+    color: "#9ce4ff",
+    fontFamily: "Fredoka_600SemiBold",
     fontSize: 15,
-    fontWeight: "600",
   },
-  primaryButton: {
-    backgroundColor: "#87c6ff",
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+  detailCard: {
+    borderColor: "rgba(227, 215, 255, 0.16)",
+    borderRadius: 28,
+    borderWidth: 1,
+    marginTop: 24,
+    overflow: "hidden",
+    padding: 20,
   },
-  primaryButtonText: {
-    color: "#07111f",
+  heroValue: {
+    color: "#ffffff",
+    fontFamily: "Fredoka_700Bold",
+    fontSize: 27,
+    lineHeight: 34,
+    marginTop: 8,
+  },
+  cardValue: {
+    color: "#f4efff",
+    fontFamily: "Fredoka_500Medium",
+    fontSize: 16,
+    lineHeight: 24,
+    marginTop: 6,
+  },
+  upcomingDose: {
+    color: "#ffffff",
+    fontFamily: "Fredoka_500Medium",
     fontSize: 15,
-    fontWeight: "700",
+    lineHeight: 22,
+    marginTop: 8,
   },
   secondaryButton: {
     alignItems: "center",
-    borderColor: "#2a355d",
-    borderRadius: 14,
+    alignSelf: "stretch",
+    backgroundColor: "rgba(255, 255, 255, 0.1)",
+    borderColor: "rgba(255, 255, 255, 0.16)",
+    borderRadius: 999,
     borderWidth: 1,
     marginTop: 16,
     paddingVertical: 12,
   },
   secondaryButtonText: {
-    color: "#d6defb",
+    color: "#ffffff",
+    fontFamily: "Fredoka_600SemiBold",
     fontSize: 15,
-    fontWeight: "600",
   },
   dangerButton: {
     alignItems: "center",
-    backgroundColor: "#2a1218",
-    borderColor: "#5a2530",
-    borderRadius: 14,
+    backgroundColor: "rgba(255, 117, 173, 0.16)",
+    borderColor: "rgba(255, 154, 196, 0.28)",
+    borderRadius: 999,
     borderWidth: 1,
     marginTop: 12,
     paddingVertical: 12,
   },
   dangerButtonText: {
-    color: "#ffb7c3",
+    color: "#ffd6e7",
+    fontFamily: "Fredoka_600SemiBold",
     fontSize: 15,
-    fontWeight: "700",
   },
   inputLabel: {
-    color: "#d6defb",
+    color: "#ffffff",
+    fontFamily: "Fredoka_600SemiBold",
     fontSize: 15,
-    fontWeight: "600",
     marginTop: 16,
   },
   input: {
-    backgroundColor: "#0d1325",
-    borderColor: "#263157",
-    borderRadius: 14,
+    backgroundColor: "rgba(11, 10, 38, 0.34)",
+    borderColor: "rgba(255, 255, 255, 0.14)",
+    borderRadius: 20,
     borderWidth: 1,
     color: "#ffffff",
+    fontFamily: "Fredoka_500Medium",
     fontSize: 15,
     marginTop: 8,
     paddingHorizontal: 14,
@@ -577,13 +1086,15 @@ const styles = StyleSheet.create({
     textAlignVertical: "top",
   },
   helperText: {
-    color: "#8590b2",
+    color: "#d4c7ff",
+    fontFamily: "Fredoka_500Medium",
     fontSize: 13,
     lineHeight: 18,
     marginTop: 8,
   },
   errorText: {
-    color: "#ff9090",
+    color: "#ffb9d7",
+    fontFamily: "Fredoka_500Medium",
     fontSize: 14,
     marginTop: 16,
   },
